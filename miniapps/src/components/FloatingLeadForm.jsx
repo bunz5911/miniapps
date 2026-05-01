@@ -5,6 +5,44 @@ import {
 } from '../constants/floatingLeadCopy.js'
 
 /**
+ * FormSubmit AJAX 응답을 분류합니다.
+ * 참고: localhost는 활성화 없이 성공 처리되는 경우가 있고,
+ * 배포 도메인(pages.dev 등)은 이메일의 Activate 링크가 필요할 때가 많습니다.
+ */
+function classifyFormSubmitResponse(res, data) {
+  const msg =
+    typeof data?.message === 'string' ? data.message : ''
+
+  /** 서비스별 메시지 문구 차이 허용 */
+  const lc = msg.toLowerCase()
+
+  const isSuccessExplicit =
+    data?.success === true ||
+    data?.success === 'true' ||
+    msg === 'Email sent successfully!' ||
+    msg === 'The form was submitted successfully.'
+
+  if (res.ok && isSuccessExplicit) return 'success'
+
+  if (
+    res.ok &&
+    (lc.includes('needs activation') || lc.includes('activate form'))
+  ) {
+    return 'needs_activation'
+  }
+
+  if (
+    res.ok &&
+    lc.includes('web server') &&
+    lc.includes('html')
+  ) {
+    return 'referrer_blocked'
+  }
+
+  return 'error'
+}
+
+/**
  * 하단 고정 리드 폼 — 해설 언어에 맞는 문구로 PDF 신청 이메일을 수집합니다.
  * FormSubmit.co AJAX로 수신함으로 전달합니다(최초 1회 서비스 측 확인이 필요할 수 있음).
  */
@@ -17,6 +55,7 @@ export function FloatingLeadForm({ explanationLocale }) {
   }, [explanationLocale])
 
   const [email, setEmail] = useState('')
+  /** idle | sending | success | error | needs_activation | referrer_blocked */
   const [status, setStatus] = useState('idle')
   const [honeypot, setHoneypot] = useState('')
 
@@ -49,17 +88,37 @@ export function FloatingLeadForm({ explanationLocale }) {
           }),
         })
 
-        const data = await res.json().catch(() => ({}))
-        const ok =
-          res.ok &&
-          (data.success === true ||
-            data.success === 'true' ||
-            data.message === 'Email sent successfully!')
+        const rawText = await res.text()
+        let data = {}
+        try {
+          data = rawText ? JSON.parse(rawText) : {}
+        } catch {
+          data = {}
+        }
 
-        if (!ok) throw new Error('FormSubmit rejected')
+        const outcome = classifyFormSubmitResponse(res, data)
 
-        setStatus('success')
-        setEmail('')
+        if (import.meta.env.DEV && outcome !== 'success') {
+          console.warn('[FloatingLead]', res.status, data)
+        }
+
+        if (outcome === 'success') {
+          setStatus('success')
+          setEmail('')
+          return
+        }
+
+        if (outcome === 'needs_activation') {
+          setStatus('needs_activation')
+          return
+        }
+
+        if (outcome === 'referrer_blocked') {
+          setStatus('referrer_blocked')
+          return
+        }
+
+        throw new Error('FormSubmit rejected')
       } catch {
         setStatus('error')
       }
@@ -119,9 +178,22 @@ export function FloatingLeadForm({ explanationLocale }) {
             </button>
           </div>
 
-          {status === 'error' ? (
-            <p className="floating-lead-feedback floating-lead-feedback--err" role="alert">
-              {copy.error}
+          {status === 'error' ||
+          status === 'needs_activation' ||
+          status === 'referrer_blocked' ? (
+            <p
+              className={
+                status === 'error'
+                  ? 'floating-lead-feedback floating-lead-feedback--err'
+                  : 'floating-lead-feedback floating-lead-feedback--warn'
+              }
+              role={status === 'error' ? 'alert' : 'status'}
+            >
+              {status === 'needs_activation'
+                ? copy.needsActivation
+                : status === 'referrer_blocked'
+                  ? copy.referrerBlocked
+                  : copy.error}
             </p>
           ) : null}
         </form>

@@ -657,6 +657,11 @@ body {
   font-weight: 500;
 }
 
+.floating-lead-feedback--warn {
+  color: #a16207;
+  font-weight: 600;
+}
+
 @media (max-width: 380px) {
   .floating-lead-row {
     flex-direction: column;
