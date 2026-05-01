@@ -3,6 +3,10 @@ import {
   FLOATING_LEAD_COPY,
   LEAD_RECIPIENT_EMAIL,
 } from '../constants/floatingLeadCopy.js'
+import {
+  WEB3FORMS_ENDPOINT,
+  getWeb3FormsAccessKey,
+} from '../constants/leadSubmit.js'
 
 /**
  * FormSubmit AJAX 응답을 분류합니다.
@@ -43,8 +47,47 @@ function classifyFormSubmitResponse(res, data) {
 }
 
 /**
+ * Web3Forms로 전송 — 토큰 활성화 없이 정적 사이트에서 동작하기 쉬움.
+ */
+async function submitViaWeb3Forms(trimmed, explanationLocale, honeypot) {
+  const accessKey = getWeb3FormsAccessKey()
+  if (!accessKey) return { mode: 'skipped' }
+
+  const res = await fetch(WEB3FORMS_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      access_key: accessKey,
+      subject:
+        '[Soul Diary] PDF + 동화로 배우는 한국어 (4주 후) · 20% code',
+      email: trimmed,
+      replyto: trimmed,
+      /** Web3 honeypot — 비어 있어야 전송 유효 */
+      botcheck: honeypot,
+      from_name: 'Soul Diary',
+      message: [
+        'PDF 리드 신청',
+        `신청 이메일: ${trimmed}`,
+        `해설 언어: ${explanationLocale ?? 'unknown'}`,
+        '출처: Soul Diary 플로팅 폼',
+      ].join('\n'),
+    }),
+  })
+
+  const data = await res.json().catch(() => ({}))
+  if (data.success === true) return { mode: 'ok' }
+  return {
+    mode: 'failed',
+    detail: typeof data.message === 'string' ? data.message : '',
+  }
+}
+
+/**
  * 하단 고정 리드 폼 — 해설 언어에 맞는 문구로 PDF 신청 이메일을 수집합니다.
- * FormSubmit.co AJAX로 수신함으로 전달합니다(최초 1회 서비스 측 확인이 필요할 수 있음).
+ * VITE_WEB3FORMS_ACCESS_KEY가 있으면 Web3Forms, 없으면 FormSubmit(AJAX)을 사용합니다.
  */
 export function FloatingLeadForm({ explanationLocale }) {
   const copy = useMemo(() => {
@@ -68,9 +111,31 @@ export function FloatingLeadForm({ explanationLocale }) {
       if (!trimmed) return
 
       setStatus('sending')
-      const endpoint = `https://formsubmit.co/ajax/${LEAD_RECIPIENT_EMAIL}`
 
       try {
+        const web3 = await submitViaWeb3Forms(
+          trimmed,
+          explanationLocale,
+          honeypot.trim(),
+        )
+
+        if (web3.mode === 'ok') {
+          setStatus('success')
+          setEmail('')
+          return
+        }
+
+        if (web3.mode === 'failed') {
+          if (import.meta.env.DEV) {
+            console.warn('[FloatingLead] Web3Forms:', web3.detail)
+          }
+          setStatus('error')
+          return
+        }
+
+        /** FormSubmit 폴백 */
+        const endpoint = `https://formsubmit.co/ajax/${LEAD_RECIPIENT_EMAIL}`
+
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: {
@@ -99,7 +164,7 @@ export function FloatingLeadForm({ explanationLocale }) {
         const outcome = classifyFormSubmitResponse(res, data)
 
         if (import.meta.env.DEV && outcome !== 'success') {
-          console.warn('[FloatingLead]', res.status, data)
+          console.warn('[FloatingLead] FormSubmit', res.status, data)
         }
 
         if (outcome === 'success') {
